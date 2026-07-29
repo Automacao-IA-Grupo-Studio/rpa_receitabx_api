@@ -1,0 +1,185 @@
+==============================================================================
+ COMO RODAR O ROBO (ReceitanetBX / bx_api)   -- guia rapido
+==============================================================================
+
+O robo baixa documentos SPED (ECF, PISCOFINS, ECD, ICMS) pela fila do banco
+AUTOMATAX. O comando principal e:
+
+    py main.py orquestrar [opcoes]
+
+Ele faz, por certificado: configura o servico -> pesquisa cada CNPJ ->
+solicita o que existe -> espera o download -> move pra rede -> grava o status
+de volta no banco.
+
+
+------------------------------------------------------------------------------
+ 1) COMO RODAR  (sempre teste ANTES no modo simulacao)
+------------------------------------------------------------------------------
+
+SIMULACAO (dry-run) -- NAO toca em nada (nem servico, nem banco, nem Receita).
+So mostra o plano: quantas linhas pendentes, quais certificados, quais CNPJs.
+Nao precisa de administrador.
+
+    py main.py orquestrar --sistema todos
+
+EXECUCAO REAL -- baixa de verdade e grava status no banco. Reinicia o servico
+(mexe em Program Files), entao PRECISA de administrador: ele pede UAC sozinho,
+ou rode num terminal ja aberto como Administrador.
+
+    py main.py orquestrar --executar --sistema todos
+
+REGRA DE OURO: rode primeiro SEM --executar pra ver o plano. Se estiver certo,
+repita COM --executar.
+
+MODO FULL-TIME (VM dedicada): esta VM fica rodando o ReceitaBX o tempo todo, sem
+horario fixo. Quem faz isso e a tarefa "ReceitaBX_FullTime" (rodar_fulltime.bat),
+um LOOP que repete: baixa pendentes (--limpar) -> completa ECD parciais -> dorme
+15 min -> repete. As tarefas de horario fixo (madrugada/catch-up) ficam DESLIGADAS
+(o register_task_fulltime.ps1 desativa as duas). Ver secao 6.
+
+
+------------------------------------------------------------------------------
+ 2) OS PARAMETROS  (o porque de cada um)
+------------------------------------------------------------------------------
+
+--executar
+    Liga a execucao real. SEM ele = simulacao (padrao, por seguranca).
+    So o --executar cria pedido na Receita e escreve status no banco.
+
+--sistema todos | ecf | piscofins | ecd | icms      (padrao: todos)
+    "todos" = ReceitaBX completo: baixa os 4 documentos por cliente e grava o
+    status agregado na fila (a linha "tipo 5" representa os 4). E o modo normal.
+    Um documento so (ex.: --sistema ecf) = baixa APENAS aquele documento, para
+    os mesmos CNPJs, e NAO grava status (util pra reforcar/recuperar 1 tipo).
+
+--cert ID [ID ...]
+    Processa SOMENTE o(s) certificado(s) informado(s) pelo id. Sem isso, roda
+    TODOS os certificados da fila. Ver secao 3.
+
+--teto MIN
+    Modo DRENAGEM: da uma janela longa de MIN minutos POR certificado e nao
+    desiste cedo (ignora o corte de "sem arquivo novo"). Serve pra madrugada,
+    quando queremos esvaziar o backlog sem pressa. Sem --teto, a espera e
+    adaptativa: enquanto chega arquivo NUNCA corta; so encerra apos ~25 min
+    totalmente parado sem arquivo novo. Ex.: --teto 180 (ate 3h por certificado).
+
+
+------------------------------------------------------------------------------
+ 3) BAIXAR DE UM CERTIFICADO ESPECIFICO
+------------------------------------------------------------------------------
+
+Use --cert com o id do certificado (o mesmo id_certificado que aparece na fila
+do AUTOMATAX). Exemplos:
+
+    py main.py orquestrar --cert 4                 (simula so o cert 4)
+    py main.py orquestrar --executar --cert 4      (roda de verdade so o cert 4)
+    py main.py orquestrar --executar --cert 3 4    (roda so os certs 3 e 4)
+
+Exemplos de id:  4 = Studio Varejo   |   3 = store   |   5 = Studio Agro
+(o 5 esta na lista de ignorados). Pra confirmar o id/nome de um certificado:
+
+    py -c "from database.db_handler import DBHandler; c=DBHandler().buscar_certificado(4); print(c['id'], c['company_name'], c['pfx_filename'])"
+
+IMPORTANTE: o arquivo .pfx daquele certificado precisa estar em
+    C:\Users\automacao\Desktop\certificados
+com o nome igual ao pfx_filename do banco, senao o robo pula com erro.
+
+
+------------------------------------------------------------------------------
+ 4) COMO VER OS LOGS
+------------------------------------------------------------------------------
+
+(a) LOG DA APLICACAO -- o que o robo fez (pedidos, downloads, status, erros).
+    Um arquivo por dia em:  <projeto>\logs\orquestrar-AAAAMMDD.log
+    Acompanhar AO VIVO enquanto roda:
+
+        Get-Content .\logs\orquestrar-$(Get-Date -Format yyyyMMdd).log -Wait -Tail 20
+
+    Listar os logs existentes (mais recente por ultimo):
+
+        Get-ChildItem .\logs\orquestrar-*.log | Sort-Object LastWriteTime
+
+(b) LOG DA RODADA DA MADRUGADA (wrapper do .bat, pega erros de bootstrap):
+        <projeto>\logs\madrugada.log
+
+(c) LOGS DO SERVICO (os arquivos brutos que o servico baixou), por certificado:
+        C:\Users\automacao\Documents\download_bx\<profile>\logs
+    (profile e a "pasta" do certificado, ex.: store, varejo...)
+
+(d) STATUS NO BANCO -- desfecho de cada solicitacao (5=sucesso, 6=erro,
+    8=sem eventos, 21=parcial, 3=aguardando download, 1=aguardando). Painel do
+    servico: http://127.0.0.1:2444/
+
+
+------------------------------------------------------------------------------
+ 5) LIMPAR O DISCO (download_bx enche com o tempo)
+------------------------------------------------------------------------------
+
+O robo COPIA os arquivos pra rede (nao move), entao os originais ficam em
+C:\Users\automacao\Documents\download_bx e vao acumulando. O comando 'limpar'
+apaga com seguranca SO os arquivos de CNPJs cuja linha JA CONCLUIU (status 5):
+
+    py main.py limpar               (SIMULA: mostra quanto liberaria, nao apaga)
+    py main.py limpar --executar    (apaga de verdade)
+    py main.py limpar --executar --cert 4    (so os CNPJs do certificado 4)
+
+Seguranca: nunca apaga arquivo de CNPJ pendente/parcial/erro, nunca apaga logs,
+e so mexe dentro do download_bx. O dono de cada arquivo vem do proprio nome.
+Se um CNPJ for reprocessado depois, o servico rebaixa o que precisar.
+
+Automatico: 'orquestrar --executar --limpar' roda a limpeza ao FIM do lote. No
+modo full-time (secao 6) a limpeza ja vai junto em cada ciclo. REGRA DE OURO:
+rode 'py main.py limpar' (simulacao) antes de apagar de verdade.
+
+
+------------------------------------------------------------------------------
+ 6) MODO FULL-TIME (VM dedicada, rodando o tempo todo)
+------------------------------------------------------------------------------
+
+Esta VM e dedicada: o ReceitaBX fica rodando continuamente, sem horario fixo.
+O loop (rodar_fulltime.bat) repete, sem parar:
+   1) baixa tudo que esta pendente e limpa o disco  (orquestrar --sistema todos --limpar)
+   2) completa os ECD que ficaram parciais          (orquestrar --catchup --teto 120)
+   3) dorme 15 min e recomeca.
+
+ATIVAR (uma vez, ELEVADO):
+    .\register_task_fulltime.ps1
+  Isso cria a tarefa "ReceitaBX_FullTime" (inicia no logon) e DESLIGA as tarefas
+  de horario fixo (madrugada e catch-up) — elas nao podem rodar junto com o loop.
+
+INICIAR agora (sem esperar o proximo logon):
+    Start-ScheduledTask -TaskName 'ReceitaBX_FullTime'
+  ou, numa janela ELEVADA:  .\rodar_fulltime.bat
+
+IMPORTANTE:
+  - So UMA orquestracao pode rodar por vez (todas mexem no mesmo servico). O loop
+    ja e sequencial; nao rode 'orquestrar --executar' a mao enquanto ele estiver
+    ativo (pare a tarefa antes: Stop-ScheduledTask -TaskName 'ReceitaBX_FullTime').
+  - O loop precisa do SERVICO saudavel (portas 2443/2444 no ar). Se o servico
+    cair, conserte antes (ver o passo do banco Derby).
+  - Log resumido do loop:  logs\fulltime.log   |   detalhes: logs\orquestrar-*.log
+
+PARAR o loop:
+    Stop-ScheduledTask -TaskName 'ReceitaBX_FullTime'   (e feche a janela do .bat)
+
+
+------------------------------------------------------------------------------
+ RESUMO (cola rapida)
+------------------------------------------------------------------------------
+  MODO FULL-TIME (VM dedicada):
+  Ativar (1x, elevado) ...... .\register_task_fulltime.ps1
+  Iniciar agora ............. Start-ScheduledTask -TaskName 'ReceitaBX_FullTime'
+  Parar ..................... Stop-ScheduledTask  -TaskName 'ReceitaBX_FullTime'
+  Log do loop ao vivo ....... Get-Content .\logs\fulltime.log -Wait -Tail 20
+
+  AVULSO (quando o loop estiver parado):
+  Simular tudo .............. py main.py orquestrar --sistema todos
+  Rodar tudo (real) ......... py main.py orquestrar --executar --sistema todos (teto 20)
+  Rodar com teto maior	      py main.py orquestrar --executar --teto 60
+  Rodar so 1 certificado .... py main.py orquestrar --executar --cert 4
+  Drenar backlog (longo) .... py main.py orquestrar --executar --sistema todos --teto 180
+  Rodar o que faltou ........ py main.py orquestrar --executar --catchup --teto 120
+  Limpar disco (simula) ..... py main.py limpar
+  Limpar disco (apaga) ...... py main.py limpar --executar
+  Ver log ao vivo ........... Get-Content .\logs\orquestrar-$(Get-Date -Format yyyyMMdd).log -Wait -Tail 20
+==============================================================================

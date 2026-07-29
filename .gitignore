@@ -1,0 +1,29 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Controle de duplicados (estado local, não versionar)
+movidos.txt
+
+# Logs e temporários
+*.log
+
+# Credenciais
+.env
+
+# Scripts
+register_task
+register_task_ecd
+
+# testes
+tests
+
+# IA
+.claude
+
+
+
