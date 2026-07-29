@@ -1,8 +1,7 @@
 # bx_api — Automação de Download de SPED (ReceitanetBX Serviço)
 
-Automação da baixa de escriturações **SPED ECF** da Receita Federal via o
-**web service SOAP** do **ReceitanetBX Serviço**, substituindo a antiga
-automação por interface gráfica (PyAutoGUI + OCR).
+Automação da baixa de escriturações da Receita Federal via o
+**web service SOAP** do **ReceitanetBX Serviço**.
 
 O contexto completo, o contrato da API e as regras de negócio estão em
 [DOCUMENTACAO_RECEITANETBX.md](DOCUMENTACAO_RECEITANETBX.md). Este README foca na
